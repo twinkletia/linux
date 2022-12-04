@@ -1102,3 +1102,8 @@ config MMC_OWL
 
 config MMC_SDHCI_EXTERNAL_DMA
 	bool
+
+
+config MMC_RV32X
+	tristate "RV32X MMCHOST"
+	depends on MMC
