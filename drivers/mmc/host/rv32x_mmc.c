@@ -168,7 +168,7 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	mmc->ops = &rv32x_mmc_host;
 	mmc->caps = MMC_CAP_SPI;
 	rv32x = mmc_priv(mmc);
-	rv32x->regs = platforn_get_resource(pdev, IORESOURCE_MEM, 0);
+	rv32x->regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	pr_debug("rv32x->regs:%x",rv32x->regs);
 	pr_debug("rv32x->regs:%x",*(int *)(rv32x->regs));
 
