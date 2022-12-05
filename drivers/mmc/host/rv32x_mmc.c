@@ -7,10 +7,9 @@
 
 #include <linux/bio.h>
 #include <linux/dma-mapping.h>
-#include <linux/crc7.h>
-#include <linux/crc-itu-t.h>
-#include <linux/mmc/slot-gpio.h>
-#include <linux/spi/spi.h>
+#include <linux/printk.h>
+#include <linux/io.h>
+#include <linux/of.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>		/* for R1_SPI_* bit values */
@@ -161,7 +160,6 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	struct rv32x_mmc *rv32x;
 	struct mmc_host *mmc;
 	int err;
-	u32 val;
 	mmc = mmc_alloc_host(sizeof(*rv32x), &pdev->dev);
 	if (!mmc)
 		return -ENOMEM;
@@ -169,9 +167,10 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	platform_set_drvdata(pdev, mmc);
 	mmc->ops = &rv32x_mmc_host;
 	mmc->caps = MMC_CAP_SPI;
-	mmc->max_blk_size = 512;
 	rv32x = mmc_priv(mmc);
-	rv32x->regs = devm_platform_ioremap_resource(pdev, 0);
+	rv32x->regs = platforn_get_resource(pdev, IORESOURCE_MEM, 0);
+	pr_debug("rv32x->regs:%x",rv32x->regs);
+	pr_debug("rv32x->regs:%x",*(int *)(rv32x->regs));
 
 	err = mmc_add_host(mmc);
 	if (unlikely(err))
