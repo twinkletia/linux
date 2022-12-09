@@ -130,16 +130,18 @@ static int rv32x_mmc_command(struct mmc_host *mmc, struct mmc_command *cmd)
 
 static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
-	pr_debug("mmc_host mmc:%x",mmc);
-	pr_debug("mmc_request mrq:%x",mrq);
+	mrq->cap_cmd_during_tfr = true;
+	/*
 	pr_debug("mmc_request mrq->cmd:%x",mrq->cmd);
 	pr_debug("mmc_request mrq->cmd->opcode:%x",mrq->cmd->opcode);
 	pr_debug("mmc_request mrq->cmd->arg:%x",mrq->cmd->arg);
 	pr_debug("mmc_request mrq->sbc:%x",mrq->sbc);
-	pr_debug("mmc_request mrq->data:%x",mrq->data);
 	pr_debug("mmc_request mrq->stop:%x",mrq->stop);
+	pr_debug("mmc_request mrq->data:%x",mrq->data);
+	
 	if (!rv32x_mmc_command(mmc, mrq->cmd) && mrq->stop)
 		rv32x_mmc_command(mmc, mrq->stop);
+	*/
 }
 
 static void rv32x_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
