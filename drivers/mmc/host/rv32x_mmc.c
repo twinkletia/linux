@@ -16,104 +16,89 @@
 
 #include <linux/platform_device.h>
 
-#define RV32X_SPI_DATA_BASE    0x0
-#define RV32X_SPI_STATUS    0x200
-#define RV32X_SPI_OPERATION    0x210
-#define RV32X_SPI_ADDR    0x214
+#define RV32X_MMC_DATA_BASE    0x0
+#define RV32X_MMC_STATUS    0x200
+#define RV32X_MMC_R1STAT	0x204
+#define RV32X_MMC_RESP		0x208
+#define RV32X_MMC_CMD		0x20C
+#define RV32X_MMC_ARG		0x210
+#define RV32X_MMC_CSD_CID_BASE	0x214
+#define INITED 0x1
+#define IDLE 0x2
+#define EXEC 0x4
+#define INTR_EN 0x8
+#define OK (INITED | IDLE)
 
 
 struct rv32x_mmc {
-	void __iomem      *regs;
-	unsigned size;
+	void __iomem      *regbase;
 	void* kmap_addr;
 	unsigned blk_cnt;
 };
 
+
+static inline struct mmc_command* data_to_cmd(struct mmc_data**);
+static void rv32x_mmc_read_block(struct rv32x_mmc*, struct mmc_data*);
+static void rv32x_mmc_write_block(struct rv32x_mmc*, struct mmc_data*);
+static int rv32x_mmc_transfer_data(struct rv32x_mmc*, struct mmc_data *);
+static int rv32x_mmc_do_command(struct rv32x_mmc*, u32, u32, u32*);
+
+static inline struct mmc_command* data_to_cmd(struct mmc_data** data_ptr){
+	return container_of(data_ptr, struct mmc_command, data);
+}
+
 static void rv32x_mmc_read_block(struct rv32x_mmc* rv32x, struct mmc_data* data){
-	iowrite32(data->blk_addr + rv32x->blk_cnt,rv32x->regs+RV32X_SPI_ADDR);
-	iowrite32(0x00000001,rv32x->regs+RV32X_SPI_OPERATION);
-	while((ioread8(rv32x->regs+RV32X_SPI_OPERATION) != 0x0) || (ioread8(rv32x->regs+RV32X_SPI_STATUS) != 0x3)) {
-		asm volatile("nop");
-	}
-}
-
-static void rv32x_mmc_read_block_prep(struct rv32x_mmc* rv32x, struct mmc_data* data){
-	unsigned size;
-	unsigned char* data_ptr;
-	static unsigned i = 0;
-	size = rv32x->size;
+	unsigned* data_ptr;
+	unsigned i = 0;
+	struct mmc_command* cmd = data_to_cmd(&data);
+	rv32x_mmc_do_command(rv32x, 17, cmd->arg + (rv32x->blk_cnt*512), cmd->resp);	//argはdata->blk_addrでいいかも
+	rv32x->blk_cnt++;
 	data_ptr = rv32x->kmap_addr;
-	rv32x_mmc_read_block(rv32x, data); //TODO
-	while(i<size || i<RV32X_SPI_STATUS){
-		*data_ptr++ = ioread8(rv32x->regs+RV32X_SPI_DATA_BASE+i);
-		i++;
-	}
-	if(i == RV32X_SPI_STATUS){
-		i=0;
-		rv32x->blk_cnt++;
-	}
-	if(i != size){
-		rv32x->size -= i;
-		rv32x_mmc_read_block_prep(rv32x,data);
+	while(i < RV32X_MMC_STATUS){
+		*data_ptr++ = ioread32(rv32x->regbase+RV32X_MMC_DATA_BASE+i);
+		i+=4;
 	}
 }
-
 
 static void rv32x_mmc_write_block(struct rv32x_mmc* rv32x, struct mmc_data* data){
-	iowrite32(data->blk_addr + rv32x->blk_cnt,rv32x->regs+RV32X_SPI_ADDR);
-	iowrite32(0x00000002,rv32x->regs+RV32X_SPI_OPERATION);
-	while((ioread8(rv32x->regs+RV32X_SPI_OPERATION) != 0x0) || (ioread8(rv32x->regs+RV32X_SPI_STATUS) != 0x3)) {
-		asm volatile("nop");
-	}
-}
-
-static void rv32x_mmc_write_block_prep(struct rv32x_mmc* rv32x, struct mmc_data* data){
-	unsigned size;
-	unsigned char* data_ptr;
-	static unsigned i = 0;
-	size = rv32x->size;
+	unsigned* data_ptr;
+	unsigned i = 0;
+	struct mmc_command* cmd = data_to_cmd(&data);
 	data_ptr = rv32x->kmap_addr;
-	while(i<size || i<RV32X_SPI_STATUS){
-		iowrite8(*data_ptr++,rv32x->regs+RV32X_SPI_DATA_BASE+i);
-		i++;
+	while(i < RV32X_MMC_STATUS){
+		iowrite32(*data_ptr++,rv32x->regbase+RV32X_MMC_DATA_BASE+i);
+		i+=4;
 	}
-	if(i == RV32X_SPI_STATUS){
-		rv32x_mmc_write_block(rv32x, data);
-		i=0;
-		rv32x->blk_cnt++;
-	}
-	if(i != size){
-		rv32x->size -= i;
-		rv32x_mmc_write_block_prep(rv32x,data);
-	}
+	rv32x_mmc_do_command(rv32x, 24, cmd->arg + (rv32x->blk_cnt*512), cmd->resp);	//argはdata->blk_addrでいいかも
+	rv32x->blk_cnt++;
 }
 
-static int rv32x_mmc_command(struct mmc_host *mmc, struct mmc_command *cmd)
+static int rv32x_mmc_transfer_data(struct rv32x_mmc* rv32x,
+	struct mmc_data *data)
 {
-	pr_debug("mmc_data data:%x",cmd->data);
-	struct mmc_data *data = cmd->data;
-	struct rv32x_mmc* rv32x = mmc_priv(mmc);
 	struct scatterlist	*sg;
 	unsigned		i;
 	int			multiple = (data->blocks > 1);
+	unsigned		length = 0;
+	unsigned		size = 0;
 
 	rv32x->blk_cnt = 0;
 	
 	for_each_sg(data->sg, sg, data->sg_len, i){
-		unsigned		length = sg->length;
-		unsigned		size = 0;
+		length = sg->length;
+		size = 0;
 
 		/* allow pio too; we don't allow highmem */
 		rv32x->kmap_addr = kmap(sg_page(sg)) + sg->offset;
 
 		/* transfer each block, and update request status */
 		while (length) {
+			rv32x->kmap_addr += size;
 			size = min(length, data->blksz);
-			rv32x->size = size;
 			if(data->flags & MMC_DATA_READ){
-				rv32x_mmc_read_block_prep(rv32x, data);
+				rv32x_mmc_read_block(rv32x, data);
 			}else{
-				rv32x_mmc_write_block_prep(rv32x, data);
+				rv32x_mmc_write_block(rv32x, data);
 			}
 			data->bytes_xfered += size;
 			length -= size;
@@ -128,9 +113,48 @@ static int rv32x_mmc_command(struct mmc_host *mmc, struct mmc_command *cmd)
 	return 0;
 }
 
+static int rv32x_mmc_do_command(struct rv32x_mmc* rv32x, u32 command, u32 arg, u32* response)
+{
+	while(ioread32(rv32x->regbase+RV32X_MMC_STATUS) != OK){
+		asm volatile("nop");
+	}
+	iowrite32(command,rv32x->regbase+RV32X_MMC_CMD);
+	iowrite32(arg,rv32x->regbase+RV32X_MMC_ARG);
+	iowrite32(EXEC,rv32x->regbase+RV32X_MMC_STATUS);
+	while(ioread32(rv32x->regbase+RV32X_MMC_STATUS) != OK){
+		asm volatile("nop");
+	}
+	if(command == 58){
+		response[0] = ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
+		response[1] = ioread32(rv32x->regbase+RV32X_MMC_RESP);
+	}else if(command == 13){
+		response[0] = ioread32(rv32x->regbase+RV32X_MMC_RESP);
+		response[0] <<= 8;
+		response[0] |= ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
+	}else{
+		response[0] = ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
+	}
+
+	return 0;
+}
+
 static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
-	mrq->cap_cmd_during_tfr = true;
+	mrq->cap_cmd_during_tfr = true;	//no irq wait
+
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->cmd->data;
+	struct rv32x_mmc* rv32x = mmc_priv(mmc);
+
+	if(data){
+		rv32x_mmc_transfer_data(rv32x, data);
+	}else if(mrq->sbc){
+		mrq->sbc->resp[0] = 0;
+	}else if(mrq->stop){
+		mrq->stop->resp[0] = 0;
+	}else{
+		rv32x_mmc_do_command(rv32x, cmd->opcode, cmd->arg, cmd->resp);
+	}
 	/*
 	pr_debug("mmc_request mrq->cmd:%x",mrq->cmd);
 	pr_debug("mmc_request mrq->cmd->opcode:%x",mrq->cmd->opcode);
@@ -138,9 +162,6 @@ static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	pr_debug("mmc_request mrq->sbc:%x",mrq->sbc);
 	pr_debug("mmc_request mrq->stop:%x",mrq->stop);
 	pr_debug("mmc_request mrq->data:%x",mrq->data);
-	
-	if (!rv32x_mmc_command(mmc, mrq->cmd) && mrq->stop)
-		rv32x_mmc_command(mmc, mrq->stop);
 	*/
 }
 
@@ -170,6 +191,7 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 {
 	struct rv32x_mmc *rv32x;
 	struct mmc_host *mmc;
+	struct resource* res;
 	int err;
 	mmc = mmc_alloc_host(sizeof(*rv32x), &pdev->dev);
 	if (!mmc)
@@ -179,9 +201,9 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	mmc->ops = &rv32x_mmc_host;
 	mmc->caps = MMC_CAP_SPI;
 	rv32x = mmc_priv(mmc);
-	rv32x->regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	pr_debug("rv32x->regs:%x",rv32x->regs);
-	pr_debug("rv32x->regs:%x",*(int *)(rv32x->regs));
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	rv32x->regbase = res->start;
+	pr_debug("rv32x->regbase:%x",rv32x->regbase);
 
 	err = mmc_add_host(mmc);
 	if (unlikely(err))
