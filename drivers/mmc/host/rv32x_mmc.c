@@ -201,8 +201,7 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	mmc->ops = &rv32x_mmc_host;
 	mmc->caps = MMC_CAP_SPI;
 	rv32x = mmc_priv(mmc);
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	rv32x->regbase = res->start;
+	rv32x->regbase = devm_platform_ioremap_resource(pdev, 0);
 	pr_debug("rv32x->regbase:%x",rv32x->regbase);
 
 	err = mmc_add_host(mmc);
