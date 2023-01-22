@@ -115,6 +115,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc* rv32x,
 
 static int rv32x_mmc_do_command(struct rv32x_mmc* rv32x, u32 command, u32 arg, u32* response)
 {
+	//pr_debug("cmd:%u",command);
+	//pr_debug("cmd:%x",arg);
 	while(ioread32(rv32x->regbase+RV32X_MMC_STATUS) != OK){
 		asm volatile("nop");
 	}
@@ -124,15 +126,13 @@ static int rv32x_mmc_do_command(struct rv32x_mmc* rv32x, u32 command, u32 arg, u
 	while(ioread32(rv32x->regbase+RV32X_MMC_STATUS) != OK){
 		asm volatile("nop");
 	}
-	if(command == 58){
-		response[0] = ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
-		response[1] = ioread32(rv32x->regbase+RV32X_MMC_RESP);
-	}else if(command == 13){
+	if(command == 13){
 		response[0] = ioread32(rv32x->regbase+RV32X_MMC_RESP);
 		response[0] <<= 8;
 		response[0] |= ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
 	}else{
 		response[0] = ioread32(rv32x->regbase+RV32X_MMC_R1STAT);
+		response[1] = ioread32(rv32x->regbase+RV32X_MMC_RESP);
 	}
 
 	return 0;
@@ -199,10 +199,12 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mmc);
 	mmc->ops = &rv32x_mmc_host;
+	mmc->ocr_avail = MMC_VDD_32_33|MMC_VDD_33_34;
 	mmc->caps = MMC_CAP_SPI;
+	mmc->caps2 = MMC_CAP2_NO_SDIO | MMC_CAP2_NO_SD | MMC_CAP2_NO_WRITE_PROTECT;
 	rv32x = mmc_priv(mmc);
 	rv32x->regbase = devm_platform_ioremap_resource(pdev, 0);
-	pr_debug("rv32x->regbase:%x",rv32x->regbase);
+	//pr_debug("rv32x->regbase:%x",rv32x->regbase);
 
 	err = mmc_add_host(mmc);
 	if (unlikely(err))
