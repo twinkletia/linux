@@ -28,6 +28,7 @@
 #define EXEC 0x4
 #define INTR_EN 0x8
 #define OK (INITED | IDLE)
+#define MMC_RECIEVE_BYTES(u) (u << 16)
 
 struct rv32x_mmc {
 	void __iomem *regbase;
@@ -37,9 +38,9 @@ struct rv32x_mmc {
 };
 
 static inline struct mmc_command *data_to_cmd(struct mmc_data **);
-static void rv32x_mmc_read_block(struct rv32x_mmc *, struct mmc_command *);
-static void rv32x_mmc_write_block(struct rv32x_mmc *, struct mmc_command *);
-static int rv32x_mmc_transfer_data(struct rv32x_mmc *, struct mmc_command *);
+static void rv32x_mmc_read_block(struct rv32x_mmc *, struct mmc_request *);
+static void rv32x_mmc_write_block(struct rv32x_mmc *, struct mmc_request *);
+static int rv32x_mmc_transfer_data(struct rv32x_mmc *, struct mmc_request *);
 static int rv32x_mmc_do_command(struct rv32x_mmc *, struct mmc_command *, u32);
 
 static inline struct mmc_command *data_to_cmd(struct mmc_data **data_ptr)
@@ -48,14 +49,18 @@ static inline struct mmc_command *data_to_cmd(struct mmc_data **data_ptr)
 }
 
 static void rv32x_mmc_read_block(struct rv32x_mmc *rv32x,
-				 struct mmc_command *cmd)
+				 struct mmc_request *mrq)
 {
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	unsigned rw_flag =
+		((data->flags & (MMC_DATA_READ | MMC_DATA_WRITE)) >> 8);
 	unsigned i = 0;
 	unsigned *memaddr = rv32x->kmap_addr;
-	rv32x_mmc_do_command(rv32x, cmd->opcode != 18 ? cmd->opcode : 17,
-			     cmd->arg + (rv32x->blk_cnt * 512),
-			     cmd->resp); //argはdata->blk_addrでいいかも
-	rv32x->blk_cnt++;
+	rv32x_mmc_do_command(rv32x, cmd,
+			     (MMC_RECIEVE_BYTES(data->blksz) |
+			      mmc_spi_resp_type(cmd) | mmc_cmd_type(cmd) |
+			      rw_flag));
 	while (i < rv32x->transfer_len) {
 		*memaddr++ = ioread32(rv32x->regbase + RV32X_MMC_DATA_BASE + i);
 		i += 4;
@@ -63,24 +68,28 @@ static void rv32x_mmc_read_block(struct rv32x_mmc *rv32x,
 }
 
 static void rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
-				  struct mmc_command *cmd)
+				  struct mmc_request *mrq)
 {
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
+	unsigned rw_flag =
+		((data->flags & (MMC_DATA_READ | MMC_DATA_WRITE)) >> 8);
 	unsigned i = 0;
 	unsigned *memaddr = rv32x->kmap_addr;
 	while (i < rv32x->transfer_len) {
 		iowrite32(*memaddr++, rv32x->regbase + RV32X_MMC_DATA_BASE + i);
 		i += 4;
 	}
-	rv32x_mmc_do_command(rv32x, cmd->opcode != 25 ? cmd->opcode : 24,
-			     cmd->arg + (rv32x->blk_cnt * 512),
-			     cmd->resp); //argはdata->blk_addrでいいかも
-	rv32x->blk_cnt++;
+	rv32x_mmc_do_command(rv32x, cmd,
+			     (mmc_spi_resp_type(cmd) | mmc_cmd_type(cmd) |
+			      rw_flag));
 }
 
 static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
-				   struct mmc_command *cmd)
+				   struct mmc_request *mrq)
 {
-	struct mmc_data *data = cmd->data;
+	struct mmc_command *cmd = mrq->cmd;
+	struct mmc_data *data = mrq->data;
 	struct scatterlist *sg;
 	unsigned i;
 	int multiple = (data->blocks > 1);
@@ -108,11 +117,19 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 			//pr_debug("size:%d",size);
 
 			if (data->flags & MMC_DATA_READ) {
-				rv32x_mmc_read_block(rv32x, cmd);
+				cmd->opcode =
+					(cmd->opcode != 18 ? cmd->opcode : 17);
+				rv32x_mmc_read_block(rv32x, mrq);
 			} else {
-				rv32x_mmc_write_block(rv32x, cmd);
+				cmd->opcode =
+					(cmd->opcode != 25 ? cmd->opcode : 24);
+				rv32x_mmc_write_block(rv32x, mrq);
 			}
+			rv32x->blk_cnt++;
 			data->bytes_xfered += size;
+			cmd->arg +=
+				rv32x->blk_cnt *
+				512; //シングルコマンドでマルチ転送を実現するために必要
 			length -= size;
 			if (!multiple)
 				break;
@@ -125,8 +142,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
 				struct mmc_command *cmd, u32 cmdinfo)
 {
-	//pr_debug("cmd:%u",command);
-	//pr_debug("cmd:%x",arg);
+	//pr_debug("cmd:%u", cmd->opcode);
+	//pr_debug("cmd:%x", cmd->arg);
 	while (ioread32(rv32x->regbase + RV32X_MMC_STATUS) != OK) {
 		asm volatile("nop");
 	}
@@ -138,14 +155,16 @@ static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
 	while (ioread32(rv32x->regbase + RV32X_MMC_STATUS) != OK) {
 		asm volatile("nop");
 	}
-	if (mmc_spi_resp_type(cmd) & MMC_RSP_SPI_R2) {
-		response[0] = ioread32(rv32x->regbase + RV32X_MMC_RESP);
-		response[0] <<= 8;
-		response[0] |= ioread32(rv32x->regbase + RV32X_MMC_R1STAT);
+	if (mmc_spi_resp_type(cmd) == MMC_RSP_SPI_R2) {
+		cmd->resp[0] = ioread32(rv32x->regbase + RV32X_MMC_RESP);
+		cmd->resp[0] <<= 8;
+		cmd->resp[0] |= ioread32(rv32x->regbase + RV32X_MMC_R1STAT);
 	} else {
-		response[0] = ioread32(rv32x->regbase + RV32X_MMC_R1STAT);
-		response[1] = ioread32(rv32x->regbase + RV32X_MMC_RESP);
+		cmd->resp[0] = ioread32(rv32x->regbase + RV32X_MMC_R1STAT);
+		cmd->resp[1] = ioread32(rv32x->regbase + RV32X_MMC_RESP);
 	}
+	//pr_debug("type: %08x", mmc_spi_resp_type(cmd));
+	//pr_debug("ocr:%x", ioread32(rv32x->regbase + RV32X_MMC_RESP));
 
 	return 0;
 }
@@ -157,21 +176,18 @@ static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct mmc_command *cmd = mrq->cmd;
 	struct rv32x_mmc *rv32x = mmc_priv(mmc);
 
-	/*
-	pr_debug("cmd ptr:%x",mrq->cmd);
-	pr_debug("cmd addr:%x",&(mrq->cmd));
-	pr_debug("data ptr:%x",cmd->data);
-	pr_debug("data addr:%x",&(cmd->data));
-	pr_debug("container cmd ptr:%x",data_to_cmd(&(cmd->data)));
-	*/
+	//pr_debug("cmd ptr:%x",mrq->cmd);
+	//pr_debug("cmd addr:%x",&(mrq->cmd));
+	//pr_debug("data addr:%x",&(cmd->data));
+	//pr_debug("container cmd ptr:%x",data_to_cmd(&(cmd->data)));
 	if (cmd->opcode == 0 || cmd->opcode == 1 || cmd->opcode == 8 ||
-	    cmd->opcode == 41) {
+	    cmd->opcode == 41) { //初期化シーケンスをskip
 		goto done;
-	} else if (cmd->data) {
-		rv32x_mmc_transfer_data(rv32x, cmd);
-	} else if (mrq->sbc) {
+	} else if (mrq->data) {
+		rv32x_mmc_transfer_data(rv32x, mrq);
+	} else if (mrq->sbc) { //マルチ転送用コマンドをskip
 		mrq->sbc->resp[0] = 0;
-	} else if (mrq->stop) {
+	} else if (mrq->stop) { //マルチ転送用コマンドをskip
 		mrq->stop->resp[0] = 0;
 	} else {
 		rv32x_mmc_do_command(rv32x, cmd,
