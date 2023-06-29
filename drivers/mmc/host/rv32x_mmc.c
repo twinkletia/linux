@@ -96,15 +96,14 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 	unsigned length = 0;
 	unsigned size = 0;
 
+	pr_debug("blocks:%d", data->blocks);
 	rv32x->blk_cnt = 0;
 
 	for_each_sg (data->sg, sg, data->sg_len, i) {
 		length = sg->length;
 		size = 0;
-		/*
-		pr_debug("sg length:%d",length);
-		pr_debug("sg offset:%08x",sg->offset);
-		*/
+		pr_debug("sg length:%d", length);
+		pr_debug("sg offset:%08x", sg->offset);
 		/* allow pio too; we don't allow highmem */
 		rv32x->kmap_addr = sg_virt(sg);
 
@@ -113,8 +112,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 			rv32x->kmap_addr += size;
 			size = min(length, data->blksz);
 			rv32x->transfer_len = size;
-			//pr_debug("kmap addr:%x",rv32x->kmap_addr);
-			//pr_debug("size:%d",size);
+			pr_debug("kmap addr:%x", rv32x->kmap_addr);
+			pr_debug("size:%d", size);
 
 			if (data->flags & MMC_DATA_READ) {
 				cmd->opcode =
@@ -128,8 +127,7 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 			rv32x->blk_cnt++;
 			data->bytes_xfered += size;
 			cmd->arg +=
-				rv32x->blk_cnt *
-				512; //シングルコマンドでマルチ転送を実現するために必要
+				data->blksz; //シングルコマンドでマルチ転送を実現するために必要
 			length -= size;
 			if (!multiple)
 				break;
@@ -142,8 +140,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
 				struct mmc_command *cmd, u32 cmdinfo)
 {
-	//pr_debug("cmd:%u", cmd->opcode);
-	//pr_debug("cmd:%x", cmd->arg);
+	pr_debug("cmd:%u", cmd->opcode);
+	pr_debug("arg:%x", cmd->arg);
 	while (ioread32(rv32x->regbase + RV32X_MMC_STATUS) != OK) {
 		asm volatile("nop");
 	}
@@ -163,7 +161,7 @@ static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
 		cmd->resp[0] = ioread32(rv32x->regbase + RV32X_MMC_R1STAT);
 		cmd->resp[1] = ioread32(rv32x->regbase + RV32X_MMC_RESP);
 	}
-	//pr_debug("type: %08x", mmc_spi_resp_type(cmd));
+	pr_debug("R1resp: %08x", cmd->resp[0]);
 	//pr_debug("ocr:%x", ioread32(rv32x->regbase + RV32X_MMC_RESP));
 
 	return 0;
