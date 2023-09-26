@@ -180,10 +180,7 @@ static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	//pr_debug("cmd addr:%x",&(mrq->cmd));
 	//pr_debug("data addr:%x",&(cmd->data));
 	//pr_debug("container cmd ptr:%x",data_to_cmd(&(cmd->data)));
-	if (cmd->opcode == 0 || cmd->opcode == 1 || cmd->opcode == 8 ||
-	    cmd->opcode == 41) { //初期化シーケンスをskip
-		goto done;
-	} else if (mrq->data) {
+	if (mrq->data) {
 		rv32x_mmc_transfer_data(rv32x, mrq);
 	} else if (mrq->sbc) { //マルチ転送用コマンドをskip
 		mrq->sbc->resp[0] = 0;
@@ -234,8 +231,7 @@ static int rv32x_mmc_init(struct platform_device *pdev)
 	mmc->ops = &rv32x_mmc_host;
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	mmc->caps = MMC_CAP_SPI | MMC_CAP_NONREMOVABLE;
-	mmc->caps2 =
-		MMC_CAP2_NO_SDIO | MMC_CAP2_NO_MMC | MMC_CAP2_NO_WRITE_PROTECT;
+	mmc->caps2 = MMC_CAP2_NO_SDIO | MMC_CAP2_NO_WRITE_PROTECT;
 	rv32x = mmc_priv(mmc);
 	rv32x->regbase = devm_platform_ioremap_resource(pdev, 0);
 	//pr_debug("rv32x->regbase:%x",rv32x->regbase);
