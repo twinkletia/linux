@@ -77,6 +77,7 @@ static int rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
 		((data->flags & (MMC_DATA_READ | MMC_DATA_WRITE)) >> 8);
 	unsigned i = 0;
 	unsigned *memaddr = rv32x->kmap_addr;
+	unsigned error = 0;
 	while (i < rv32x->transfer_len) {
 		iowrite32(*memaddr++, rv32x->regbase + RV32X_MMC_DATA_BASE + i);
 		i += 4;
@@ -84,9 +85,11 @@ static int rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
 	rv32x_mmc_do_command(rv32x, cmd,
 			     (mmc_spi_resp_type(cmd) | mmc_cmd_type(cmd) |
 			      rw_flag));
-	if (ioread32(rv32x->regbase + RV32X_MMC_DATA_RESP) & 0xF == 0x5) {
+	error = ioread32(rv32x->regbase + RV32X_MMC_DATA_RESP);
+	if ((error & 0xF) == 0x5) {
 		return 0;
 	} else {
+		pr_debug("dataError: %08x", error);
 		return -EILSEQ;
 	}
 }
