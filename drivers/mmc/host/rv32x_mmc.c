@@ -23,6 +23,7 @@
 #define RV32X_MMC_CMD 0x20C
 #define RV32X_MMC_ARG 0x210
 #define RV32X_MMC_CMDINFO 0x214
+#define RV32X_MMC_DATA_RESP 0x218
 #define INITED 0x1
 #define IDLE 0x2
 #define EXEC 0x4
@@ -39,9 +40,9 @@ struct rv32x_mmc {
 
 static inline struct mmc_command *data_to_cmd(struct mmc_data **);
 static void rv32x_mmc_read_block(struct rv32x_mmc *, struct mmc_request *);
-static void rv32x_mmc_write_block(struct rv32x_mmc *, struct mmc_request *);
+static int rv32x_mmc_write_block(struct rv32x_mmc *, struct mmc_request *);
 static int rv32x_mmc_transfer_data(struct rv32x_mmc *, struct mmc_request *);
-static int rv32x_mmc_do_command(struct rv32x_mmc *, struct mmc_command *, u32);
+static void rv32x_mmc_do_command(struct rv32x_mmc *, struct mmc_command *, u32);
 
 static inline struct mmc_command *data_to_cmd(struct mmc_data **data_ptr)
 {
@@ -67,8 +68,8 @@ static void rv32x_mmc_read_block(struct rv32x_mmc *rv32x,
 	}
 }
 
-static void rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
-				  struct mmc_request *mrq)
+static int rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
+				 struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
 	struct mmc_data *data = mrq->data;
@@ -83,6 +84,11 @@ static void rv32x_mmc_write_block(struct rv32x_mmc *rv32x,
 	rv32x_mmc_do_command(rv32x, cmd,
 			     (mmc_spi_resp_type(cmd) | mmc_cmd_type(cmd) |
 			      rw_flag));
+	if (ioread32(rv32x->regbase + RV32X_MMC_DATA_RESP) & 0xF == 0x5) {
+		return 0;
+	} else {
+		return -EILSEQ;
+	}
 }
 
 static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
@@ -116,6 +122,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 			rv32x->transfer_len = size;
 			//	pr_debug("kmap addr:%x", rv32x->kmap_addr);
 			//	pr_debug("size:%d", size);
+			//pr_debug("cmd:%u", cmd->opcode);
+			//pr_debug("arg:%x", cmd->arg);
 
 			if (data->flags & MMC_DATA_READ) {
 				cmd->opcode =
@@ -124,7 +132,13 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 			} else {
 				cmd->opcode =
 					(cmd->opcode != 25 ? cmd->opcode : 24);
-				rv32x_mmc_write_block(rv32x, mrq);
+				data->error = rv32x_mmc_write_block(rv32x, mrq);
+				if (data->error || cmd->error) {
+					pr_debug("cmd:%u", cmd->opcode);
+					pr_debug("arg:%x", cmd->arg);
+					pr_debug("R1resp: %08x", cmd->resp[0]);
+					break;
+				}
 			}
 			rv32x->blk_cnt++;
 			data->bytes_xfered += size;
@@ -139,8 +153,8 @@ static int rv32x_mmc_transfer_data(struct rv32x_mmc *rv32x,
 	return 0;
 }
 
-static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
-				struct mmc_command *cmd, u32 cmdinfo)
+static void rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
+				 struct mmc_command *cmd, u32 cmdinfo)
 {
 	//	pr_debug("cmd:%u", cmd->opcode);
 	//	pr_debug("arg:%x", cmd->arg);
@@ -166,7 +180,16 @@ static int rv32x_mmc_do_command(struct rv32x_mmc *rv32x,
 	//	pr_debug("R1resp: %08x", cmd->resp[0]);
 	//pr_debug("ocr:%x", ioread32(rv32x->regbase + RV32X_MMC_RESP));
 
-	return 0;
+	if (cmd->resp[0] != 0) {
+		if ((R1_SPI_PARAMETER | R1_SPI_ADDRESS) & cmd->resp[0])
+			cmd->error = -EFAULT; /* Bad address */
+		else if (R1_SPI_ILLEGAL_COMMAND & cmd->resp[0])
+			cmd->error = -ENOSYS; /* Function not implemented */
+		else if (R1_SPI_COM_CRC & cmd->resp[0])
+			cmd->error = -EILSEQ; /* Illegal byte sequence */
+		else if ((R1_SPI_ERASE_SEQ | R1_SPI_ERASE_RESET) & cmd->resp[0])
+			cmd->error = -EIO;
+	}
 }
 
 static void rv32x_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
